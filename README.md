@@ -4,9 +4,14 @@ A Neovim plugin to hide sensitive values in `.env` files and other configuration
 
 Unlike other plugins that rely on complex patterns, **veil.nvim** uses simple, predictable patterns that work with standard configuration file formats.
 
+## Veil Working!
+
 ![veil.nvim demo](demo.png)
 
-> For a video demo, see [demo.mp4](demo.mp4)
+## Veil Example Video
+
+https://github.com/user-attachments/assets/9583b667-2e98-41b7-990f-298eed37e402
+
 
 ## Features
 
