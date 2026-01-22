@@ -4,6 +4,8 @@ A Neovim plugin to hide sensitive values in `.env` files and other configuration
 
 Unlike other plugins that rely on complex patterns, **veil.nvim** uses simple, predictable patterns that work with standard configuration file formats.
 
+![veil.nvim demo](demo.gif)
+
 ## Features
 
 - Automatically conceals sensitive values in `.env`, `.npmrc`, `.pypirc`, and more
