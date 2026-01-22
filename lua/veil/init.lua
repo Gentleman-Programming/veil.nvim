@@ -1,7 +1,7 @@
 local M = {}
 
-M.enabled = false
-M.matches = {}
+-- Per-buffer state
+M.buffers = {} -- { [bufnr] = { enabled = bool, matches = {}, peek_line = nil } }
 
 -- Default configuration
 M.defaults = {
@@ -57,6 +57,19 @@ M.defaults = {
 
 M.opts = {}
 
+-- Get or create buffer state
+local function get_buf_state(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if not M.buffers[bufnr] then
+    M.buffers[bufnr] = {
+      enabled = false,
+      matches = {},
+      peek_line = nil,
+    }
+  end
+  return M.buffers[bufnr]
+end
+
 -- Build a pattern from a simple keyword (e.g., "MY_VAR" -> pattern that matches MY_VAR=value)
 local function keyword_to_pattern(keyword)
   return {
@@ -79,7 +92,6 @@ end
 -- Check if current file matches configured files
 local function is_target_file()
   local filename = vim.fn.expand("%:t")
-  local filepath = vim.fn.expand("%:p")
 
   for _, pattern in ipairs(M.opts.files) do
     -- Check exact filename match
@@ -97,142 +109,38 @@ local function is_target_file()
   return false
 end
 
+-- Clear matches for a buffer
+local function clear_matches(bufnr)
+  local state = get_buf_state(bufnr)
+  for _, match_id in ipairs(state.matches) do
+    pcall(vim.fn.matchdelete, match_id)
+  end
+  state.matches = {}
+end
+
 -- Apply concealment to current buffer
-local function apply_conceal()
-  if not M.enabled then
+local function apply_conceal(bufnr, skip_line)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  if not state.enabled then
     return
   end
 
-  local bufnr = vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
   -- Clear existing matches
-  M.clear_matches()
+  clear_matches(bufnr)
 
-  -- Set conceal options
+  -- Set conceal options for current window
   vim.wo.conceallevel = 2
   vim.wo.concealcursor = "nvic"
 
   for line_num, line in ipairs(lines) do
-    for _, pat in ipairs(M.opts.patterns) do
-      -- Use Vim regex for matching
-      local vim_pattern = pat.pattern:gsub("%(", "\\("):gsub("%)", "\\)")
-      
-      -- Find all matches in the line
-      local start_col = 1
-      while true do
-        local match_start, match_end = line:find(pat.pattern, start_col)
-        if not match_start then
-          break
-        end
-
-        -- Extract the parts using Lua pattern
-        local full_match = line:sub(match_start, match_end)
-        local key_part, value_part = full_match:match(pat.pattern)
-
-        if value_part and #value_part > 0 then
-          -- Calculate the column where the value starts
-          local key_len = key_part and #key_part or 0
-          local value_start_col = match_start + key_len - 1
-
-          -- Add match for concealing
-          local match_id = vim.fn.matchadd("Conceal", 
-            string.format("\\%%%dl\\%%>%dc\\%%<%dc.", 
-              line_num, 
-              value_start_col,
-              match_end + 1
-            ),
-            100,
-            -1,
-            { conceal = M.opts.conceal_char }
-          )
-          table.insert(M.matches, match_id)
-        end
-
-        start_col = match_end + 1
-      end
-    end
-  end
-end
-
--- Clear all concealment matches
-function M.clear_matches()
-  for _, match_id in ipairs(M.matches) do
-    pcall(vim.fn.matchdelete, match_id)
-  end
-  M.matches = {}
-end
-
--- Enable veil
-function M.enable()
-  if M.enabled then
-    return -- Already enabled, don't notify again
-  end
-  M.enabled = true
-  apply_conceal()
-  vim.notify("Veil enabled", vim.log.levels.INFO)
-end
-
--- Disable veil
-function M.disable()
-  M.enabled = false
-  M.clear_matches()
-  vim.wo.conceallevel = 0
-  vim.notify("Veil disabled", vim.log.levels.INFO)
-end
-
--- Toggle veil
-function M.toggle()
-  if M.enabled then
-    M.disable()
-  else
-    M.enable()
-  end
-end
-
--- Peek - temporarily reveal value on current line only
-M.peek_line = nil
-
-function M.peek()
-  if not M.enabled then
-    vim.notify("Veil is not enabled", vim.log.levels.WARN)
-    return
-  end
-
-  local current_line = vim.fn.line(".")
-
-  -- If already peeking this line, stop
-  if M.peek_line == current_line then
-    M.stop_peek()
-    return
-  end
-
-  -- Start peeking current line
-  M.peek_line = current_line
-  M.apply_conceal_except_line(current_line)
-end
-
--- Stop peeking and restore all conceals
-function M.stop_peek()
-  if M.peek_line then
-    M.peek_line = nil
-    apply_conceal()
-  end
-end
-
--- Apply conceal to all lines except the specified one
-function M.apply_conceal_except_line(skip_line)
-  M.clear_matches()
-
-  local bufnr = vim.api.nvim_get_current_buf()
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-
-  vim.wo.conceallevel = 2
-  vim.wo.concealcursor = "nvic"
-
-  for line_num, line in ipairs(lines) do
+    -- Skip the peek line if specified
     if line_num ~= skip_line then
       for _, pat in ipairs(M.opts.patterns) do
+        -- Find all matches in the line
         local start_col = 1
         while true do
           local match_start, match_end = line:find(pat.pattern, start_col)
@@ -240,16 +148,19 @@ function M.apply_conceal_except_line(skip_line)
             break
           end
 
+          -- Extract the parts using Lua pattern
           local full_match = line:sub(match_start, match_end)
           local key_part, value_part = full_match:match(pat.pattern)
 
           if value_part and #value_part > 0 then
+            -- Calculate the column where the value starts
             local key_len = key_part and #key_part or 0
             local value_start_col = match_start + key_len - 1
 
-            local match_id = vim.fn.matchadd("Conceal",
-              string.format("\\%%%dl\\%%>%dc\\%%<%dc.",
-                line_num,
+            -- Add match for concealing
+            local match_id = vim.fn.matchadd("Conceal", 
+              string.format("\\%%%dl\\%%>%dc\\%%<%dc.", 
+                line_num, 
                 value_start_col,
                 match_end + 1
               ),
@@ -257,13 +168,91 @@ function M.apply_conceal_except_line(skip_line)
               -1,
               { conceal = M.opts.conceal_char }
             )
-            table.insert(M.matches, match_id)
+            table.insert(state.matches, match_id)
           end
 
           start_col = match_end + 1
         end
       end
     end
+  end
+end
+
+-- Enable veil for current buffer
+function M.enable()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  if state.enabled then
+    return -- Already enabled
+  end
+  
+  state.enabled = true
+  apply_conceal(bufnr)
+  vim.notify("Veil enabled", vim.log.levels.INFO)
+end
+
+-- Disable veil for current buffer
+function M.disable()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  state.enabled = false
+  clear_matches(bufnr)
+  vim.wo.conceallevel = 0
+  vim.notify("Veil disabled", vim.log.levels.INFO)
+end
+
+-- Toggle veil for current buffer
+function M.toggle()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  if state.enabled then
+    M.disable()
+  else
+    M.enable()
+  end
+end
+
+-- Check if veil is enabled for current buffer
+function M.is_enabled()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  return state.enabled
+end
+
+-- Peek - temporarily reveal value on current line only
+function M.peek()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  if not state.enabled then
+    vim.notify("Veil is not enabled", vim.log.levels.WARN)
+    return
+  end
+
+  local current_line = vim.fn.line(".")
+
+  -- If already peeking this line, stop
+  if state.peek_line == current_line then
+    M.stop_peek()
+    return
+  end
+
+  -- Start peeking current line
+  state.peek_line = current_line
+  apply_conceal(bufnr, current_line)
+end
+
+-- Stop peeking and restore all conceals
+function M.stop_peek()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local state = get_buf_state(bufnr)
+  
+  if state.peek_line then
+    state.peek_line = nil
+    apply_conceal(bufnr)
   end
 end
 
@@ -344,8 +333,10 @@ function M.setup(opts)
     vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
       group = group,
       callback = function()
-        if M.enabled and is_target_file() then
-          apply_conceal()
+        local bufnr = vim.api.nvim_get_current_buf()
+        local state = get_buf_state(bufnr)
+        if state.enabled and is_target_file() then
+          apply_conceal(bufnr, state.peek_line)
         end
       end,
     })
@@ -356,7 +347,9 @@ function M.setup(opts)
     vim.api.nvim_create_autocmd("InsertEnter", {
       group = group,
       callback = function()
-        if M.enabled and is_target_file() then
+        local bufnr = vim.api.nvim_get_current_buf()
+        local state = get_buf_state(bufnr)
+        if state.enabled and is_target_file() then
           vim.wo.concealcursor = "nvc" -- Remove 'i' to reveal in insert mode
         end
       end,
@@ -365,7 +358,9 @@ function M.setup(opts)
     vim.api.nvim_create_autocmd("InsertLeave", {
       group = group,
       callback = function()
-        if M.enabled and is_target_file() then
+        local bufnr = vim.api.nvim_get_current_buf()
+        local state = get_buf_state(bufnr)
+        if state.enabled and is_target_file() then
           vim.wo.concealcursor = "nvic" -- Restore full conceal
         end
       end,
@@ -376,9 +371,19 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd("CursorMoved", {
     group = group,
     callback = function()
-      if M.peek_line and M.peek_line ~= vim.fn.line(".") then
+      local bufnr = vim.api.nvim_get_current_buf()
+      local state = get_buf_state(bufnr)
+      if state.peek_line and state.peek_line ~= vim.fn.line(".") then
         M.stop_peek()
       end
+    end,
+  })
+
+  -- Clean up buffer state when buffer is deleted
+  vim.api.nvim_create_autocmd("BufDelete", {
+    group = group,
+    callback = function(args)
+      M.buffers[args.buf] = nil
     end,
   })
 end
