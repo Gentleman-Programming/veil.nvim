@@ -9,6 +9,7 @@ M.defaults = {
   files = {
     ".env",
     ".env.*",
+    ".env.production",
     ".npmrc",
     ".pypirc",
     "credentials.json",
